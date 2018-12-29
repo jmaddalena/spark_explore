@@ -1,0 +1,532 @@
+---
+title: "sparklyr"
+output: html_notebook
+---
+
+I am trying to get familiar with Spark as a way to increase efficiency of machine learning models. 
+
+# Spark 
+
+Unlike MapReduce, Spark can do computations in memory, making it signficantly faster.
+
+Spark does lazy evaluation, e.g if you call for a full data set and then ask for the resulting first record, it will only pull the first record. 
+
+Spark is a library that can be used by Java, Python, and Scala. 
+
+Spark does not replace Hadoop. You still need a single data layer.
+
+Hadoop MapReduce better at:
+
+* Linear processing of huge data sets.
+* Economical if immediate results not expected.
+
+Spark is better at:
+
+* Iterative processing
+* Near real-time processing
+* Graph processing
+* Machine learning
+
+# sparklyr
+
+First install `sparklyr` and spark:
+
+```
+install.packages("sparklyr")
+sparklyr::spark_install(version = "2.1.0")
+```
+
+```{r}
+library(dplyr)
+library(sparklyr)
+```
+
+Connect to a local instance of Spark (can also connect to remote Spark cluster)
+
+```{r}
+sc <- spark_connect(master = "local")
+```
+
+Copying datasets into the Spark cluster
+
+```{r}
+
+iris_tbl <- copy_to(sc, iris)
+flights_tbl <- copy_to(sc, nycflights13::flights, "flights")
+batting_tbl <- copy_to(sc, Lahman::Batting, "batting")
+
+src_tbls(sc)
+```
+
+```{r}
+system.time({nycflights13::flights %>% filter(dep_delay == 2)})
+```
+
+```{r}
+system.time({flights_tbl %>% filter(dep_delay == 2)})
+```
+
+```{r}
+system.time({delay <- nycflights13::flights %>% 
+  group_by(tailnum) %>%
+  summarise(count = n(), dist = mean(distance), delay = mean(arr_delay)) %>%
+  filter(count > 20, dist < 2000, !is.na(delay)) %>%
+  collect
+})
+```
+
+```{r}
+system.time({delay <- flights_tbl %>% 
+  group_by(tailnum) %>%
+  summarise(count = n(), dist = mean(distance), delay = mean(arr_delay)) %>%
+  filter(count > 20, dist < 2000, !is.na(delay)) %>%
+  collect})
+```
+
+
+Can also pull from a SQL query:
+
+```{r}
+library(DBI)
+iris_preview <- dbGetQuery(sc, "SELECT * FROM iris LIMIT 10")
+```
+
+
+
+# Data Camp class: sparklyr
+
+Spark is a platform for cluster computing. Spark lets you spread data and computations over clusters with multiple nodes (think of each node as a separate computer). Splitting up your data makes it easier to work with very large datasets because each node only works with a small amount of data.
+
+## Sparklyr dplyr interface
+
+Spark SQL interface, convertubg R cide into SQL code before passing it to Spark.
+
+```{r}
+# Load sparklyr
+library(sparklyr)
+
+# Connect to your Spark cluster
+spark_conn <- spark_connect(master = "local")
+
+# Print the version of Spark
+spark_version(spark_conn)
+
+# Disconnect from Spark
+spark_disconnect(spark_conn)
+```
+
+
+```{r}
+# Load dplyr
+library(dplyr)
+
+# Explore track_metadata structure
+str(track_metadata)
+
+# Connect to your Spark cluster
+spark_conn <- spark_connect("local")
+
+# Copy track_metadata to Spark
+track_metadata_tbl <- copy_to(spark_conn, track_metadata)
+
+# List the data frames available in Spark
+src_tbls(spark_conn)
+
+# Disconnect from Spark
+spark_disconnect(spark_conn)
+```
+
+Both `tbl()` and `copy_to()` generate tibbles that are only references to the large data frames, so their actual object size will be small. 
+
+```{r}
+# Link to the track_metadata table in Spark
+track_metadata_tbl <- tbl(spark_conn, "track_metadata")
+
+# See how big the dataset is
+dim(track_metadata_tbl)
+
+# See how small the tibble is
+object_size(track_metadata_tbl)
+```
+
+```{r}
+# Print 5 rows, all columns
+print(track_metadata_tbl, n = 5, width = Inf)
+
+# Examine structure of tibble
+str(track_metadata_tbl)
+
+# Examine structure of data
+glimpse(track_metadata_tbl)
+```
+
+
+```{r}
+# Print 5 rows, all columns
+print(track_metadata_tbl, n = 5)
+
+# Examine structure of tibble
+str(track_metadata_tbl)
+
+# Examine structure of data
+glimpse(track_metadata_tbl)
+```
+
+```{r}
+# track_metadata_tbl has been pre-defined
+track_metadata_tbl
+
+# Manipulate the track metadata
+track_metadata_tbl %>%
+  # Select columns
+  select(artist_name, release, title, year)
+
+# Try to select columns using [ ]
+tryCatch({
+    # Selection code here
+    track_metadata_tbl[,c('artist_name', 'release', 'title', 'year')]
+  },
+  error = print
+)
+```
+
+There are lots of reasons that you might want to move your data from Spark to R. You've already seen how some data is moved from Spark to R when you print it. You also need to collect your dataset if you want to plot it, or if you want to use a modeling technique that is not available in Spark. (After all, R has the widest selection of available models of any programming language.)
+
+```{r}
+# track_metadata_tbl has been pre-defined
+track_metadata_tbl
+
+results <- track_metadata_tbl %>%
+  # Filter where artist familiarity is greater than 0.9
+  filter(artist_familiarity > .9)
+
+# Examine the class of the results
+print(class(results))
+
+# Collect your results
+collected <- results %>%
+  collect()
+
+# Examine the class of the collected results
+class(collected)
+```
+
+You need to store the results of intermediate calculations, but you don't want to collect them because it is slow. The solution is to use compute() to compute the calculation, but store the results in a temporary data frame on Spark. Compute takes two arguments: a tibble, and a variable name for the Spark data frame that will store the results.
+
+```{r}
+# track_metadata_tbl has been pre-defined
+track_metadata_tbl
+
+computed <- track_metadata_tbl %>%
+  # Filter where artist familiarity is greater than 0.8
+  filter(artist_familiarity > .8) %>%
+  # Compute the results
+  compute("familiar_artists")
+
+# See the available datasets
+src_tbls(spark_conn)
+
+# Examine the class of the computed results
+class(computed)
+```
+
+Can use raw SQL code as well:
+
+```{r}
+# Write SQL query
+query <- "SELECT * FROM track_metadata WHERE year < 1935 AND duration > 300"
+
+# Run the query
+(results <- dbGetQuery(spark_conn, query))
+
+# dbSendQuery() and dbFetch() to execute query before fetching results
+```
+
+## Other Interfaces 
+
+sparklyr also has two "native" interfaces 
+* Native means that they call Java or Scala code to access Spark libraries directly, without any conversion to SQL 
+
+1. MLlib - access to machine learning library
+  - feature transformation functions named `ft_`
+  - machine learning functions named `ml_`
+2. Spark DataFrame AMI
+  - sorting, sampling, partitioning data sets
+  - functions start with `sdf_`
+  
+One important philosophical difference between working with R and working with Spark is that Spark is much stricter about variable types than R. `DoubleType` is Spark's equivalent of R's `numeric` vector type. sparklyr will handle converting numeric to DoubleType, but it is up to the user to convert logical or integer data into numeric data and back again.
+
+### Transformations
+
+All the sparklyr feature transformation functions have a similar user interface. The first three arguments are always a Spark tibble, a string naming the input column, and a string naming the output column. That is, they follow this pattern.
+
+```
+a_tibble %>%
+  ft_some_transformation("x", "y", some_other_args)
+```
+
+```{r}
+hotttnesss <- track_metadata_tbl %>%
+  # Select artist_hotttnesss
+   select(artist_hotttnesss) %>%
+  # Binarize to is_hottt_or_nottt
+   ft_binarizer("artist_hotttnesss", "is_hottt_or_nottt", threshold = .5) %>%
+  # Collect the result
+  collect() %>%
+  # Convert is_hottt_or_nottt to logical
+  mutate(is_hottt_or_nottt = as.logical(is_hottt_or_nottt))
+
+```
+
+
+```{r}
+decades <- c(1930.01, 1940.01, 1950.01, 1960.01, 1970.01, 1980.01, 1990.01, 2000.01, 2010.01)
+
+decade_labels <- c("1930-1940", "1940-1950", "1950-1960", "1960-1970", "1970-1980", "1980-1990", "1990-2000", "2000-2010")
+
+hotttnesss_over_time <- track_metadata_tbl %>%
+  # Select artist_hotttnesss and year
+  select(artist_hotttnesss, year) %>%
+  # Convert year to numeric
+  mutate(year = as.numeric(year)) %>%
+  # Bucketize year to decade using decades vector
+  ft_bucketizer("year", "decade", splits = decades) %>%
+  # Collect the result
+  collect() %>%
+  # Convert decade to factor using decade_labels
+  mutate(decade = factor(decade, labels = decade_labels))
+```
+
+
+A special case of the previous transformation is to cut a continuous variable into buckets where the buckets are defined by quantiles of the variable.
+
+```{r}
+# track_metadata_tbl, duration_labels have been pre-defined
+track_metadata_tbl
+duration_labels
+
+familiarity_by_duration <- track_metadata_tbl %>%
+  # Select duration and artist_familiarity
+  select(duration, artist_familiarity) %>%
+  # Bucketize duration
+  ft_quantile_discretizer("duration", "duration_bin", n.buckets = 5) %>%
+  # Collect the result
+  collect() %>%
+  # Convert duration bin to factor
+  mutate(duration_bin = factor(duration_bin))
+
+```
+
+Common uses of text-mining include analyzing shopping reviews to ascertain purchasers' feeling about the product, or analyzing financial news to predict the sentiment regarding stock prices. In order to analyze text data, common pre-processing steps are to convert the text to lower-case (see tolower()), and to split sentences into individual words.
+
+`ft_tokenizer()` performs both these steps. Its usage takes the same pattern as the other transformations that you have seen, with no other arguments.
+
+```{r}
+title_text <- track_metadata_tbl %>%
+  # Select artist_name, title
+  select(artist_name, title) %>%
+  # Tokenize title to words
+  ft_tokenizer("title", "word") %>%
+  # Collect the result
+  collect() %>%
+  # Flatten the word column 
+  mutate(word = lapply(word, as.character)) %>% 
+  # Unnest the list column
+  unnest()
+```
+
+
+```{r}
+track_metadata_tbl
+
+track_metadata_tbl %>%
+  # Select artist_mbid column
+  select(artist_mbid) %>%
+  # Split it by hyphens
+  ft_regex_tokenizer("artist_mbid", "artist_mbid_chunks", pattern = "-")
+```
+
+So far in this chapter, you've explored some feature transformation functions from Spark's MLlib. sparklyr also provides access to some functions making use of the Spark DataFrame API.
+
+The dplyr way of sorting a tibble is to use arrange(). You can also sort tibbles using Spark's DataFrame API using sdf_sort(). This function takes a character vector of columns to sort on, and currently only sorting in ascending order is supported.
+
+```{r}
+microbenchmark(
+  arranged = track_metadata_tbl %>%
+    # Arrange by year, then artist_name, then release, then title
+    arrange(year, artist_name, release, title) %>%
+    # Collect the result
+    collect(),
+  sorted = track_metadata_tbl %>%
+    # Sort by year, then artist_name, then release, then title
+    sdf_sort(c("year", "artist_name", "release", "title")) %>%
+    # Collect the result
+    collect(),
+  times = 5
+)
+```
+
+```
+Unit: milliseconds
+     expr      min       lq     mean   median       uq      max neval
+ arranged 115.3594 121.7221 140.1823 123.8851 166.9067 173.0384     5
+   sorted 135.1322 136.1523 184.5745 152.2388 173.5675 325.7818     5
+```
+
+sparklyr has a function named `sdf_schema()` for exploring the columns of a tibble on the R side. It's easy to call; and a little painful to deal with the return value.
+
+R type    | Spark type
+----------|----------------
+logical   | BooleanType
+numeric	  | DoubleType
+integer	  | IntegerType
+character	| StringType
+list      | ArrayType
+
+
+```{r}
+# track_metadata_tbl has been pre-defined
+track_metadata_tbl
+
+# Get the schema
+(schema <- sdf_schema(track_metadata_tbl))
+
+# Transform the schema
+schema %>%
+  lapply(function(x) do.call(data_frame, x)) %>%
+  bind_rows()
+```
+
+
+`sdf_sample()` takes a tibble, and the fraction of rows to return. 
+
+```{r}
+# track_metadata_tbl has been pre-defined
+track_metadata_tbl
+
+# track_metadata_tbl has been pre-defined
+track_metadata_tbl
+
+track_metadata_tbl %>%
+  # Sample the data without replacement
+  sdf_sample(fraction = 0.01, replacement = FALSE, seed = 20000229) %>%
+  # Compute the result
+  compute(name = "sample_track_metadata")
+```
+
+`sdf_partition()` provides a way of partitioning your data frame into training and testing sets.
+
+```{r}
+# track_metadata_tbl has been pre-defined
+track_metadata_tbl
+
+partitioned <- track_metadata_tbl %>%
+  # Partition into training and testing sets
+  sdf_partition(training = .7, testing = .3)
+
+# Get the dimensions of the training set
+dim(partitioned$training)
+
+# Get the dimensions of the testing set
+dim(partitioned$testing)
+```
+
+### Machine Learning
+
+Basic structure:
+
+```
+a_tibble %>%
+  ml_some_model("response", c("a_feature", "another_feature"), some_other_args)
+```
+
+You can see the list of all the machine learning functions using ls().
+
+```{r}
+ls("package:sparklyr", pattern = "^ml")
+
+```
+
+In this chapter, you are going to try and predict the year a track was released, based upon its timbre.
+
+CSV files are really slow to read and write. Parquet files provide a higher performance alternative. As well as being used for Spark data, parquet files can be used with other tools in the Hadoop ecosystem, like Shark, Impala, Hive, and Pig.
+
+Technically speaking, parquet file is a misnomer. When you store data in parquet format, you actually get a whole directory worth of files. The data is split across multiple `.parquet` files, allowing it to be easily stored on multiple machines, and there are some metadata files too, describing the contents of each column.
+
+`sparklyr` can import parquet files using spark_read_parquet(). This function takes a Spark connection, a string naming the Spark DataFrame that should be created, and a path to the parquet directory. Note that this function will import the data directly into Spark, which is typically faster than importing the data into R, then using copy_to() to copy the data from R to Spark.
+
+```{r}
+# parquet_dir has been pre-defined
+parquet_dir
+
+# List the files in the parquet dir
+filenames <- dir(parquet_dir, full.names = TRUE)
+
+# Show the filenames and their sizes
+data_frame(
+  filename = basename(filenames),
+  size_bytes = file.size(filenames)
+)
+
+# Import the data into Spark
+timbre_tbl <- spark_read_parquet(spark_conn, "timbre", parquet_dir)
+```
+
+```{r}
+# track_data_tbl has been pre-defined
+track_data_tbl
+
+training_testing_artist_ids <- track_data_tbl %>%
+  # Select the artist ID
+  select(artist_id) %>%
+  # Get distinct rows
+  distinct() %>%
+  # Partition into training/testing sets
+  sdf_partition(training = .7, test = .3)
+
+track_data_to_model_tbl <- track_data_tbl %>%
+  # Inner join to training partition
+  inner_join(training_testing_artist_ids$training)
+
+track_data_to_predict_tbl <- track_data_tbl %>%
+  # Inner join to testing partition
+  inner_join(training_testing_artist_ids$test)
+```
+
+
+```{r}
+# track_data_to_model_tbl has been pre-defined
+track_data_to_model_tbl
+
+feature_colnames <- track_data_to_model_tbl %>%
+  # Get the column names
+  colnames() %>%
+  # Limit to the timbre columns
+  str_subset(fixed("timbre"))
+
+gradient_boosted_trees_model <- track_data_to_model_tbl %>%
+  # Run the gradient boosted trees model
+  ml_gradient_boosted_trees("year", feature_colnames)
+```
+
+```{r}
+# training, testing sets & model are pre-defined
+track_data_to_model_tbl
+track_data_to_predict_tbl
+gradient_boosted_trees_model
+
+responses <- track_data_to_predict_tbl %>%
+  # Select the year column
+  select(year) %>%
+  # Collect the results
+  collect() %>%
+  # Add in the predictions
+  mutate(
+    predicted_year = 
+      predict(
+        gradient_boosted_trees_model,
+        track_data_to_predict_tbl
+     )
+  )
+```
+
